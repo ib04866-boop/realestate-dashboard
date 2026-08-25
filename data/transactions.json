@@ -1,0 +1,26 @@
+{
+  "generated_at": "2026-08-25T23:00:00",
+  "transactions": [
+    {
+      "complex_name": "휴먼시아",
+      "contract_date": "2026-07-30",
+      "floor": 2,
+      "exclusive_m2": 59.84,
+      "price": 647000000
+    },
+    {
+      "complex_name": "휴먼시아",
+      "contract_date": "2026-07-24",
+      "floor": 14,
+      "exclusive_m2": 59.84,
+      "price": 650000000
+    },
+    {
+      "complex_name": "휴먼시아",
+      "contract_date": "2026-07-10",
+      "floor": 3,
+      "exclusive_m2": 59.84,
+      "price": 630000000
+    }
+  ]
+}
