@@ -2,391 +2,247 @@ from __future__ import annotations
 
 import hashlib
 import json
-import random
 import re
 import time
 from typing import Any
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
-from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
+
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 
-BISAN_CORTAR_NO = "4117310100"
-
-BASE = "https://new.land.naver.com"
-
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "Referer": "https://new.land.naver.com/complexes",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+# 사용자께서 보내준 네이버페이 부동산 단지 링크.
+# fin.land.naver.com 쪽 화면을 실제 Chromium으로 열고,
+# 브라우저가 받은 JSON 응답에서 매물 데이터를 찾아낸다.
+TARGET_PAGES = {
+    "휴먼시아": "https://fin.land.naver.com/map?layer=NobwRAlgJmBcYGMD2BbADgGwKYA8D6UWALgIYQZgA0YaJATiSgM5zjLrY4CSMsATHwCcAVgDsAX2pMs9BAAsACvUYtY4UgCM4YekQgJsVHXT0GsAFQaFzATzRZVYAIIBGMOPEBdIA&center=3zfsqX-2AF7k4&zoom=15",
+    "더포레스트힐": "https://fin.land.naver.com/map?layer=NobwRAlgJmBcYGMD2BbADgGwKYA8D6UWALgIYQZgA0YaJATiSgM5zjLrY4CSMsAzAAYAHAIC%2B1JlnoIAFgAV6jFrHCkARnDD0iEBNipa6OvVgAqDQqYCeaLMrABBAIxhRogLpA",
 }
 
-# 네이버의 실제 단지명과 우리 화면에서 사용할 이름
-TARGET_COMPLEXES = {
-    "더포레스트힐": [
-        "더포레스트힐",
-    ],
-    "휴먼시아": [
-        "안양임곡휴먼시아",
-        "임곡휴먼시아",
-        "휴먼시아",
-    ],
-}
+NAVER_HOME = "https://fin.land.naver.com/"
 
 
 def fp(*parts: Any) -> str:
-    return hashlib.sha1(
-        "|".join(map(str, parts)).encode("utf-8")
-    ).hexdigest()
-
-
-def request_json(url: str, retries: int = 1) -> dict[str, Any]:
-    print(f"[NAVER] request: {url}", flush=True)
-
-    try:
-        req = Request(url, headers=HEADERS)
-
-        with urlopen(req, timeout=8) as response:
-            print(f"[NAVER] status={response.status}", flush=True)
-
-            raw = response.read().decode("utf-8")
-            print(f"[NAVER] received {len(raw)} bytes", flush=True)
-
-            return json.loads(raw)
-
-    except HTTPError as e:
-        print(f"[NAVER] HTTP ERROR {e.code}: {e.reason}", flush=True)
-        raise
-
-    except URLError as e:
-        print(f"[NAVER] URL ERROR: {e}", flush=True)
-        raise
-
-    except TimeoutError:
-        print("[NAVER] TIMEOUT after 8 seconds", flush=True)
-        raise
-
-    except Exception as e:
-        print(f"[NAVER] ERROR: {type(e).__name__}: {e}", flush=True)
-        raise
+    return hashlib.sha1("|".join(map(str, parts)).encode("utf-8")).hexdigest()
 
 
 def parse_price(value: Any) -> int:
-    """
-    네이버 가격을 원 단위 integer로 변환.
-    예:
-      6억 3,000 -> 630000000
-      63000     -> 630000000 (만원 단위)
-    """
-
+    """네이버 가격 값을 원 단위 정수로 변환."""
     if value is None:
         return 0
 
     if isinstance(value, (int, float)):
         n = int(value)
-
-        # API 값이 만원 단위인 경우
+        # 네이버 부동산 API는 종종 만원 단위 숫자를 사용한다.
         if 0 < n < 10_000_000:
             return n * 10_000
-
         return n
 
     s = str(value).strip().replace(",", "").replace(" ", "")
-
     if not s:
         return 0
 
+    # 예: "6억5000", "6억 5,000", "65000"
     total = 0
-
-    billion = re.search(r"(\d+(?:\.\d+)?)억", s)
-    if billion:
-        total += int(float(billion.group(1)) * 100_000_000)
-
-    rest = re.sub(r".*?억", "", s) if "억" in s else s
-    man = re.search(r"(\d+(?:\.\d+)?)만?", rest)
-
-    if man:
-        total += int(float(man.group(1)) * 10_000)
-
-    if total:
+    m = re.search(r"(\d+(?:\.\d+)?)억", s)
+    if m:
+        total += int(float(m.group(1)) * 100_000_000)
+        rest = s[m.end():]
+        digits = re.search(r"(\d+(?:\.\d+)?)", rest)
+        if digits:
+            total += int(float(digits.group(1)) * 10_000)
         return total
 
     digits = re.sub(r"[^\d]", "", s)
-
     if not digits:
         return 0
 
     n = int(digits)
-
     if n < 10_000_000:
         return n * 10_000
-
     return n
 
 
-def normalize_float(value: Any) -> float | None:
+def as_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
     try:
-        if value is None or value == "":
-            return None
-        return float(value)
+        return float(str(value).replace(",", ""))
     except (TypeError, ValueError):
         return None
 
 
-def get_complexes() -> list[dict[str, Any]]:
-    print("[NAVER] 비산동 단지 목록 조회 시작", flush=True)
-    """
-    비산동의 아파트 단지 목록 조회.
-    네이버 API 형태가 변경될 가능성을 고려해
-    여러 응답 키를 처리한다.
-    """
+def pick(d: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in d and d[key] not in (None, ""):
+            return d[key]
+    return None
 
-    candidates = [
-        (
-            f"{BASE}/api/regions/complexes?"
-            + urlencode({
-                "cortarNo": BISAN_CORTAR_NO,
-                "realEstateType": "APT",
-            })
-        ),
-        (
-            f"{BASE}/api/complexes/single-markers/2.0?"
-            + urlencode({
-                "cortarNo": BISAN_CORTAR_NO,
-                "zoom": 15,
-                "realEstateType": "APT",
-                "tradeType": "A1",
-                "priceType": "RETAIL",
-            })
-        ),
-    ]
 
-    errors = []
-
-    for url in candidates:
-        try:
-            data = request_json(url)
-
-            for key in (
-                "complexList",
-                "complexes",
-                "result",
-                "markers",
-            ):
-                value = data.get(key)
-
-                if isinstance(value, list) and value:
-                    return value
-
-        except Exception as e:
-            errors.append(str(e))
-
-    raise RuntimeError(
-        "비산동 단지 목록을 가져오지 못했습니다. "
-        + " | ".join(errors)
+def looks_like_article(d: dict[str, Any]) -> bool:
+    keys = set(d)
+    has_id = bool(
+        {"articleNo", "article_no", "articleId", "listingId", "id"} & keys
     )
-
-
-def complex_name(row: dict[str, Any]) -> str:
-    return str(
-        row.get("complexName")
-        or row.get("complex_name")
-        or row.get("name")
-        or row.get("markerName")
-        or ""
-    ).strip()
-
-
-def complex_no(row: dict[str, Any]) -> str:
-    value = (
-        row.get("complexNo")
-        or row.get("complex_no")
-        or row.get("id")
+    has_price = bool(
+        {
+            "dealOrWarrantPrc",
+            "dealPrice",
+            "price",
+            "tradePrice",
+            "deal_price",
+        }
+        & keys
     )
-
-    return str(value or "").strip()
-
-
-def find_target_complexes(
-    complexes: list[dict[str, Any]]
-) -> dict[str, dict[str, Any]]:
-
-    found: dict[str, dict[str, Any]] = {}
-
-    for display_name, aliases in TARGET_COMPLEXES.items():
-        for row in complexes:
-            name = complex_name(row)
-
-            if any(alias in name for alias in aliases):
-                if complex_no(row):
-                    found[display_name] = row
-                    break
-
-    missing = [
-        name for name in TARGET_COMPLEXES
-        if name not in found
-    ]
-
-    if missing:
-        names = [
-            complex_name(x)
-            for x in complexes
-            if complex_name(x)
-        ]
-
-        raise RuntimeError(
-            "대상 단지를 찾지 못했습니다: "
-            + ", ".join(missing)
-            + " / 검색된 단지 일부: "
-            + ", ".join(names[:30])
-        )
-
-    return found
+    return has_id and has_price
 
 
-def article_request(
-    complex_id: str,
-    page: int,
-) -> dict[str, Any]:
+def walk_articles(obj: Any) -> list[dict[str, Any]]:
+    """중첩 JSON 어디에 있든 매물처럼 보이는 dict를 수집."""
+    out: list[dict[str, Any]] = []
 
-    params = {
-        "realEstateType": "APT",
-        "tradeType": "A1",
-        "tag": "::::::::",
-        "rentPriceMin": 0,
-        "rentPriceMax": 900000000,
-        "priceMin": 0,
-        "priceMax": 66000,
-        "areaMin": 0,
-        "areaMax": 900000000,
-        "showArticle": "false",
-        "sameAddressGroup": "false",
-        "priceType": "RETAIL",
-        "page": page,
-        "complexNo": complex_id,
-        "type": "list",
-        "order": "rank",
-    }
+    def walk(x: Any) -> None:
+        if isinstance(x, dict):
+            if looks_like_article(x):
+                out.append(x)
+            for v in x.values():
+                walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
 
-    # 현재 가장 흔히 사용되는 단지별 매물 경로
-    url = (
-        f"{BASE}/api/articles/complex/{complex_id}?"
-        + urlencode(params)
-    )
-
-    return request_json(url)
+    walk(obj)
+    return out
 
 
-def get_articles(complex_id: str) -> list[dict[str, Any]]:
-    print(f"[NAVER] complexNo={complex_id} 매물 조회 시작", flush=True)
-    all_rows: list[dict[str, Any]] = []
+def parse_floor(value: Any) -> tuple[int | None, int | None]:
+    if value is None:
+        return None, None
 
-    for page in range(1, 11):
-        data = article_request(complex_id, page)
+    s = str(value)
+    if "/" not in s:
+        m = re.search(r"-?\d+", s)
+        return (int(m.group()) if m else None), None
 
-        rows = (
-            data.get("articleList")
-            or data.get("articles")
-            or data.get("list")
-            or []
-        )
+    a, b = s.split("/", 1)
 
-        if not isinstance(rows, list):
-            rows = []
+    def to_int(v: str) -> int | None:
+        m = re.search(r"-?\d+", v)
+        return int(m.group()) if m else None
 
-        all_rows.extend(rows)
-
-        more = data.get("isMoreData")
-
-        if more is False or not rows:
-            break
-
-        time.sleep(random.uniform(1.2, 2.0))
-
-    return all_rows
+    return to_int(a), to_int(b)
 
 
-def convert_article(
+def normalize_article(
     article: dict[str, Any],
     display_complex_name: str,
 ) -> dict[str, Any] | None:
-
     article_no = str(
-        article.get("articleNo")
-        or article.get("article_no")
+        pick(
+            article,
+            "articleNo",
+            "article_no",
+            "articleId",
+            "listingId",
+            "id",
+        )
         or ""
-    )
-
-    if not article_no:
-        return None
+    ).strip()
 
     price = parse_price(
-        article.get("dealOrWarrantPrc")
-        or article.get("dealPrice")
-        or article.get("price")
+        pick(
+            article,
+            "dealOrWarrantPrc",
+            "dealPrice",
+            "tradePrice",
+            "price",
+            "deal_price",
+        )
     )
 
-    if price <= 0:
+    if not article_no or price <= 0:
         return None
 
-    building = (
-        article.get("buildingName")
-        or article.get("building")
-        or article.get("dongName")
+    # 다른 단지가 같은 응답에 섞이는 경우 방지.
+    raw_complex = str(
+        pick(
+            article,
+            "complexName",
+            "complex_name",
+            "complexNm",
+            "aptName",
+            "name",
+        )
+        or ""
+    ).strip()
+
+    if raw_complex:
+        aliases = (
+            ["휴먼시아", "안양임곡휴먼시아", "임곡휴먼시아"]
+            if display_complex_name == "휴먼시아"
+            else ["더포레스트힐"]
+        )
+        if not any(a in raw_complex for a in aliases):
+            return None
+
+    supply = as_float(
+        pick(
+            article,
+            "area1",
+            "supplyArea",
+            "supply_m2",
+            "spc1",
+            "area",
+        )
+    )
+
+    exclusive = as_float(
+        pick(
+            article,
+            "area2",
+            "exclusiveArea",
+            "exclusive_m2",
+            "spc2",
+        )
+    )
+
+    floor, total_floor = parse_floor(
+        pick(article, "floorInfo", "floor_info", "floor")
+    )
+
+    building = str(
+        pick(
+            article,
+            "buildingName",
+            "building",
+            "dongName",
+            "buildingNo",
+            "dong",
+        )
         or ""
     )
 
-    supply = normalize_float(
-        article.get("area1")
-        or article.get("supplyArea")
-        or article.get("spc1")
+    direction = str(
+        pick(article, "direction", "directionName", "directionNm") or ""
     )
 
-    exclusive = normalize_float(
-        article.get("area2")
-        or article.get("exclusiveArea")
-        or article.get("spc2")
-    )
-
-    floor_info = str(
-        article.get("floorInfo")
-        or article.get("floor")
+    realtor = str(
+        pick(
+            article,
+            "realtorName",
+            "realtor",
+            "cpName",
+            "brokerName",
+            "agentName",
+        )
         or ""
     )
 
-    floor = None
-    total_floor = None
-
-    if "/" in floor_info:
-        a, b = floor_info.split("/", 1)
-
-        try:
-            floor = int(re.sub(r"[^\d-]", "", a))
-        except Exception:
-            pass
-
-        try:
-            total_floor = int(re.sub(r"[^\d-]", "", b))
-        except Exception:
-            pass
-
-    direction = (
-        article.get("direction")
-        or article.get("directionName")
-        or ""
+    source_url = str(
+        pick(article, "articleUrl", "url", "source_url") or ""
     )
 
-    realtor = (
-        article.get("realtorName")
-        or article.get("cpName")
-        or article.get("realtor")
-        or ""
-    )
+    if not source_url:
+        source_url = f"https://fin.land.naver.com/articles/{article_no}"
 
     return {
         "fingerprint": fp("NAVER", article_no),
@@ -401,9 +257,7 @@ def convert_article(
         "total_floor": total_floor,
         "direction": direction,
         "realtor": realtor,
-        "source_url": (
-            f"https://fin.land.naver.com/articles/{article_no}"
-        ),
+        "source_url": source_url,
     }
 
 
@@ -411,92 +265,223 @@ def filter_targets(
     rows: list[dict[str, Any]],
     cfg: dict[str, Any],
 ) -> list[dict[str, Any]]:
-
     out: list[dict[str, Any]] = []
 
     for row in rows:
         price = int(row.get("price") or 0)
-
-        if price <= 0:
-            continue
-
-        if price > int(cfg["max_price"]):
+        if price <= 0 or price > int(cfg["max_price"]):
             continue
 
         target = next(
             (
-                x for x in cfg["targets"]
-                if x["complex"]
-                in str(row.get("complex_name", ""))
+                x
+                for x in cfg["targets"]
+                if x["complex"] in str(row.get("complex_name", ""))
             ),
             None,
         )
-
         if not target:
             continue
 
         supply = float(row.get("supply_m2") or 0)
 
-        if supply <= 0:
-            continue
+        # 공급면적을 찾지 못한 경우에는 잘못 제외하지 않고 유지.
+        # 브라우저 응답 구조가 바뀌면 로그를 보고 면적 키를 추가할 수 있다.
+        if supply > 0:
+            pyeong = supply / 3.3058
+            if abs(pyeong - float(target["target_pyeong"])) > float(
+                target["tolerance"]
+            ):
+                continue
 
-        pyeong = supply / 3.3058
+        out.append(row)
 
-        if (
-            abs(
-                pyeong
-                - float(target["target_pyeong"])
+    # 동일 articleNo 중복 제거
+    unique: dict[str, dict[str, Any]] = {}
+    for row in out:
+        unique[row["fingerprint"]] = row
+    return list(unique.values())
+
+
+def collect_page(
+    page,
+    display_name: str,
+    url: str,
+) -> list[dict[str, Any]]:
+    captured: list[dict[str, Any]] = []
+    response_urls: list[str] = []
+
+    def on_response(response) -> None:
+        u = response.url
+        host = urlparse(u).netloc.lower()
+
+        # 네이버/네이버페이 부동산 관련 JSON만 본다.
+        if "naver.com" not in host:
+            return
+
+        ct = (response.headers.get("content-type") or "").lower()
+        interesting_url = any(
+            token in u.lower()
+            for token in (
+                "article",
+                "listing",
+                "complex",
+                "land",
+                "estate",
+                "property",
             )
-            <= float(target["tolerance"])
-        ):
-            out.append(row)
+        )
 
-    return out
+        if "json" not in ct and not interesting_url:
+            return
+
+        try:
+            data = response.json()
+        except Exception:
+            return
+
+        found = walk_articles(data)
+        if found:
+            captured.extend(found)
+            response_urls.append(u)
+            print(
+                f"[NAVER] {display_name}: JSON 응답에서 매물 후보 {len(found)}건 발견",
+                flush=True,
+            )
+
+    page.on("response", on_response)
+
+    print(f"[NAVER] {display_name}: 페이지 열기", flush=True)
+    print(f"[NAVER] URL={url}", flush=True)
+
+    try:
+        page.goto(
+            url,
+            wait_until="domcontentloaded",
+            timeout=30_000,
+        )
+    except PlaywrightTimeoutError:
+        print(
+            f"[NAVER] {display_name}: 최초 페이지 로드는 타임아웃이지만 계속 진행",
+            flush=True,
+        )
+
+    # 지도/단지 UI가 추가 요청을 보낼 시간을 준다.
+    page.wait_for_timeout(8_000)
+
+    # 화면에 "매물" 탭이 있으면 눌러 추가 요청을 유도한다.
+    for label in ("매물", "매매"):
+        try:
+            loc = page.get_by_text(label, exact=True)
+            if loc.count() > 0:
+                loc.first.click(timeout=3_000)
+                page.wait_for_timeout(5_000)
+                print(
+                    f"[NAVER] {display_name}: '{label}' 클릭",
+                    flush=True,
+                )
+                break
+        except Exception:
+            pass
+
+    print(
+        f"[NAVER] {display_name}: 네트워크 매물 후보 총 {len(captured)}건",
+        flush=True,
+    )
+
+    if response_urls:
+        print(
+            "[NAVER] 매물 응답 예시: " + response_urls[-1],
+            flush=True,
+        )
+
+    normalized: list[dict[str, Any]] = []
+
+    for raw in captured:
+        item = normalize_article(raw, display_name)
+        if item:
+            normalized.append(item)
+
+    return normalized
 
 
 def collect_all(
     cfg: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-
-    # 1. 비산동 단지 목록 조회
-    complexes = get_complexes()
-
-    # 2. 더포레스트힐 / 안양임곡휴먼시아 찾기
-    targets = find_target_complexes(complexes)
+    print("[NAVER] Playwright/Chromium 실매물 수집 시작", flush=True)
 
     rows: list[dict[str, Any]] = []
-    status: dict[str, Any] = {
-        "NAVER": {
-            "status": "live",
-            "count": 0,
-        }
-    }
 
-    # 한 단지라도 수집 실패하면 전체 작업을 실패시킨다.
-    # 그래야 기존 정상 listings.json을 빈 데이터로 덮어쓰지 않는다.
-    for display_name, complex_row in targets.items():
-        cid = complex_no(complex_row)
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--disable-dev-shm-usage",
+                "--no-sandbox",
+            ],
+        )
 
-        if not cid:
-            raise RuntimeError(
-                f"{display_name}: complexNo 없음"
+        context = browser.new_context(
+            locale="ko-KR",
+            timezone_id="Asia/Seoul",
+            viewport={"width": 1440, "height": 1100},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+        )
+
+        # 먼저 홈에 들어가 세션/쿠키를 만든다.
+        page = context.new_page()
+        try:
+            page.goto(
+                NAVER_HOME,
+                wait_until="domcontentloaded",
+                timeout=20_000,
             )
+            page.wait_for_timeout(2_000)
+        except PlaywrightTimeoutError:
+            print("[NAVER] 홈 초기 로드 타임아웃 - 계속 진행", flush=True)
 
-        articles = get_articles(cid)
+        for display_name, url in TARGET_PAGES.items():
+            print(f"[NAVER] ===== {display_name} =====", flush=True)
+            target_page = context.new_page()
 
-        for article in articles:
-            item = convert_article(
-                article,
-                display_name,
-            )
+            try:
+                found = collect_page(
+                    target_page,
+                    display_name,
+                    url,
+                )
+                print(
+                    f"[NAVER] {display_name}: 정규화 성공 {len(found)}건",
+                    flush=True,
+                )
+                rows.extend(found)
+            finally:
+                target_page.close()
 
-            if item:
-                rows.append(item)
-
-        time.sleep(random.uniform(1.5, 2.5))
+        browser.close()
 
     rows = filter_targets(rows, cfg)
 
-    status["NAVER"]["count"] = len(rows)
+    print(
+        f"[NAVER] 최종 조건 통과 매물 {len(rows)}건",
+        flush=True,
+    )
 
-    return rows, status
+    # 빈 결과를 정상 결과로 저장하면 기존 실제 매물이 전부 사라질 수 있으므로
+    # 반드시 실패 처리한다.
+    if not rows:
+        raise RuntimeError(
+            "네이버에서 실제 매물을 1건도 추출하지 못했습니다. "
+            "기존 listings.json 보호를 위해 업데이트를 중단합니다."
+        )
+
+    return rows, {
+        "NAVER": {
+            "status": "live",
+            "count": len(rows),
+        }
+    }
