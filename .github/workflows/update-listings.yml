@@ -1,33 +1,61 @@
 name: Update real estate listings
 
 on:
-  schedule:
-    - cron: "17 */2 * * *"
   workflow_dispatch:
+  schedule:
+    # GitHub Actions cron은 UTC 기준.
+    # 3시간마다 실행해 새 매물/가격변동을 반영한다.
+    - cron: "17 */3 * * *"
 
 permissions:
   contents: write
 
+concurrency:
+  group: update-real-estate-listings
+  cancel-in-progress: false
+
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 8
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+      - name: Install Playwright
+        run: |
+          python -m pip install --upgrade pip
+          pip install playwright
+          python -m playwright install --with-deps chromium
+
       - name: Update listings
-        run: python collector.py
+        run: |
+          python collector.py
 
       - name: Commit updated data
+        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           git add data/listings.json data/history.json
-          git diff --cached --quiet || git commit -m "Auto update property listings"
-          git push
+
+          if git diff --cached --quiet; then
+            echo "No listing changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Auto update property listings"
+
+          # 웹에서 직접 파일을 수정한 경우에도 push 충돌을 줄이기 위해
+          # 최신 main 위로 자동 재배치한 뒤 push한다.
+          git pull --rebase origin main
+          git push origin HEAD:main
