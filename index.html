@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<meta name="theme-color" content="#111827" />
+<title>비산동 매물 모니터</title>
+<style>
+:root{--bg:#f4f6f8;--card:#fff;--text:#202428;--muted:#737980;--green:#12ad57;--greenBg:#e1f8e9;--line:#e7e9ec;--dark:#22272b;--amber:#a66d00;--amberBg:#fff3d6}
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",Arial,sans-serif;background:var(--bg);color:var(--text)}
+.shell{max-width:1180px;margin:0 auto;padding:26px 22px 80px}.top{display:flex;gap:16px;align-items:center;justify-content:space-between;margin-bottom:18px}.title h1{font-size:28px;margin:0 0 5px}.title p{margin:0;color:var(--muted)}
+.btn{border:1px solid var(--line);background:#fff;border-radius:12px;padding:11px 14px;font-weight:800;cursor:pointer}.stats{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:18px 0}.stat{background:#fff;border-radius:18px;padding:18px;box-shadow:0 4px 18px rgba(20,25,30,.05)}.stat small{color:var(--muted);display:block;margin-bottom:8px}.stat strong{font-size:22px}.green{color:var(--green)}
+.panel{background:#fff;border-radius:20px;padding:16px;box-shadow:0 4px 18px rgba(20,25,30,.05);margin-bottom:18px}.filters{display:flex;flex-wrap:wrap;gap:8px}.chip{border:0;background:#f0f2f4;border-radius:999px;padding:10px 14px;font-weight:800;cursor:pointer}.chip.on{background:var(--dark);color:#fff}.notice{margin-top:12px;padding:11px 12px;border-radius:12px;background:var(--amberBg);color:var(--amber);font-size:13px;line-height:1.5}.sourcebar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px}.badge{font-size:12px;border-radius:999px;padding:6px 9px;background:#f2f4f5}.badge.ok{background:#e0f8e8;color:#118944}.badge.demo{background:#eef0ff;color:#4b58a8}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.card{background:#fff;border-radius:22px;padding:22px;box-shadow:0 5px 20px rgba(20,25,30,.06);position:relative}.card h3{margin:0 0 5px;font-size:17px;font-weight:650;color:#454b51}.price{font-size:27px;font-weight:900;letter-spacing:-.8px;margin-bottom:10px}.meta{color:#555d65;font-size:15px;line-height:1.65}.sourceRow{display:flex;gap:7px;align-items:center;flex-wrap:wrap;margin-top:14px}.src{font-size:12px;font-weight:800;background:#edf0f2;padding:6px 9px;border-radius:8px}.age{font-size:12px;color:var(--muted)}.pill{position:absolute;right:18px;top:18px;background:var(--greenBg);color:var(--green);font-size:12px;font-weight:800;padding:6px 9px;border-radius:9px}.foot{margin-top:16px;display:flex;justify-content:space-between;align-items:center;gap:12px}.link{color:#1a6bd6;text-decoration:none;font-weight:800;font-size:13px}.empty{grid-column:1/-1;text-align:center;padding:60px;color:var(--muted)}
+@media(max-width:800px){.shell{padding:0 10px 60px}.top{padding:18px 8px 6px}.title h1{font-size:22px}.title p{font-size:13px}.stats{grid-template-columns:repeat(2,1fr);gap:8px}.stat{padding:14px}.stat:last-child{grid-column:1/-1}.grid{grid-template-columns:1fr}.card{padding:20px}.price{font-size:25px}.panel{border-radius:16px}.filters{overflow:auto;flex-wrap:nowrap}.chip{white-space:nowrap}.btn{padding:9px 11px}}
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="top">
+    <div class="title"><h1>비산동 매물 모니터</h1><p>더포레스트힐 33평 · 휴먼시아 24평 근접 · 매매 6.6억 이하</p></div>
+    <button class="btn" onclick="load()">화면 새로고침</button>
+  </div>
+  <div class="stats">
+    <div class="stat"><small>현재 매물</small><strong id="cnt">-</strong></div>
+    <div class="stat"><small>더포레스트힐</small><strong id="forest">-</strong></div>
+    <div class="stat"><small>휴먼시아</small><strong id="human">-</strong></div>
+    <div class="stat"><small>최저가</small><strong class="green" id="minPrice">-</strong></div>
+    <div class="stat"><small>마지막 자동 갱신</small><strong style="font-size:15px" id="last">-</strong></div>
+  </div>
+  <div class="panel">
+    <div class="filters">
+      <button class="chip on" data-filter="all" onclick="setFilter(this)">전체</button>
+      <button class="chip" data-filter="더포레스트힐" onclick="setFilter(this)">더포레스트힐</button>
+      <button class="chip" data-filter="휴먼시아" onclick="setFilter(this)">휴먼시아</button>
+      <button class="chip" data-filter="NAVER" onclick="setFilter(this)">네이버</button>
+      <button class="chip" data-filter="KB" onclick="setFilter(this)">KB</button>
+      <button class="chip" data-filter="HOGANGNONO" onclick="setFilter(this)">호갱노노</button>
+    </div>
+    <div id="modeNotice" class="notice" style="display:none"></div>
+    <div class="sourcebar" id="sourcebar"></div>
+  </div>
+  <div class="grid" id="grid"><div class="empty">매물을 불러오는 중...</div></div>
+</div>
+<script>
+let all=[];let filter='all';
+const won=n=>{if(!n)return '-';const e=Math.floor(n/100000000),m=Math.round((n%100000000)/10000);return e?`${e}억${m?` ${m.toLocaleString()}만`:''}`:`${m.toLocaleString()}만`;};
+const esc=s=>(s??'').toString().replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function render(){const rows=all.filter(x=>filter==='all'||x.complex_name===filter||x.source===filter);document.getElementById('grid').innerHTML=rows.length?rows.map(x=>`<article class="card"><div class="pill">${esc(x.source)}</div><h3>${esc(x.complex_name)} ${esc(x.building||'')}</h3><div class="price">매매 ${won(x.price)}</div><div class="meta">아파트 · ${x.supply_m2?Math.round(x.supply_m2)+'㎡':''} ${x.exclusive_m2?'(전용 '+x.exclusive_m2+'㎡)':''}<br>${x.floor??'-'}/${x.total_floor??'-'}층 · ${esc(x.direction||'방향 정보 없음')}</div><div class="sourceRow"><span class="src">${esc(x.source)}</span>${x.realtor?`<span class="age">${esc(x.realtor)}</span>`:''}</div><div class="foot"><span class="age">확인 ${esc((x.last_seen_at||'').replace('T',' ').slice(0,16))}</span>${x.source_url?`<a class="link" href="${esc(x.source_url)}" target="_blank" rel="noreferrer">원문 보기 →</a>`:''}</div></article>`).join(''):'<div class="empty">조건에 맞는 매물이 없습니다.</div>';}
+function setFilter(el){document.querySelectorAll('.chip').forEach(x=>x.classList.remove('on'));el.classList.add('on');filter=el.dataset.filter;render()}
+async function load(){try{const r=await fetch('./data/listings.json?ts='+Date.now());if(!r.ok)throw new Error('데이터 파일을 읽지 못했습니다.');const d=await r.json();all=d.listings||[];document.getElementById('cnt').textContent=all.length+'건';document.getElementById('forest').textContent=all.filter(x=>x.complex_name.includes('더포레스트힐')).length+'건';document.getElementById('human').textContent=all.filter(x=>x.complex_name.includes('휴먼시아')).length+'건';document.getElementById('minPrice').textContent=won(Math.min(...all.map(x=>x.price)));document.getElementById('last').textContent=(d.generated_at||'-').replace('T',' ').slice(0,16);document.getElementById('sourcebar').innerHTML=Object.entries(d.sources||{}).map(([k,v])=>`<span class="badge ${v.status==='demo'?'demo':'ok'}">${esc(k)} · ${esc(v.status)} · ${v.count??0}건</span>`).join('');const n=document.getElementById('modeNotice');if(d.mode==='demo'){n.style.display='block';n.textContent='현재는 데모 데이터입니다. 실제 매물 자동수집은 각 서비스의 공식/승인된 데이터 연결 후 활성화됩니다.'}else{n.style.display='none'}render()}catch(e){document.getElementById('grid').innerHTML=`<div class="empty">${esc(e.message)}</div>`}}
+load();setInterval(load,5*60*1000);
+</script>
+</body>
+</html>
