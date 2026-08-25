@@ -45,33 +45,35 @@ def fp(*parts: Any) -> str:
     ).hexdigest()
 
 
-def request_json(url: str, retries: int = 3) -> dict[str, Any]:
-    last_error: Exception | None = None
+def request_json(url: str, retries: int = 1) -> dict[str, Any]:
+    print(f"[NAVER] request: {url}", flush=True)
 
-    for attempt in range(retries):
-        try:
-            req = Request(url, headers=HEADERS)
-            with urlopen(req, timeout=20) as response:
-                raw = response.read().decode("utf-8")
-                return json.loads(raw)
+    try:
+        req = Request(url, headers=HEADERS)
 
-        except HTTPError as e:
-            last_error = e
+        with urlopen(req, timeout=8) as response:
+            print(f"[NAVER] status={response.status}", flush=True)
 
-            # 요청 제한
-            if e.code in (401, 403, 429):
-                time.sleep(4 + attempt * 4)
-                continue
+            raw = response.read().decode("utf-8")
+            print(f"[NAVER] received {len(raw)} bytes", flush=True)
 
-            raise
+            return json.loads(raw)
 
-        except (URLError, TimeoutError, json.JSONDecodeError) as e:
-            last_error = e
-            time.sleep(2 + attempt * 2)
+    except HTTPError as e:
+        print(f"[NAVER] HTTP ERROR {e.code}: {e.reason}", flush=True)
+        raise
 
-    raise RuntimeError(
-        f"Naver request failed: {url} / {last_error}"
-    )
+    except URLError as e:
+        print(f"[NAVER] URL ERROR: {e}", flush=True)
+        raise
+
+    except TimeoutError:
+        print("[NAVER] TIMEOUT after 8 seconds", flush=True)
+        raise
+
+    except Exception as e:
+        print(f"[NAVER] ERROR: {type(e).__name__}: {e}", flush=True)
+        raise
 
 
 def parse_price(value: Any) -> int:
@@ -137,6 +139,7 @@ def normalize_float(value: Any) -> float | None:
 
 
 def get_complexes() -> list[dict[str, Any]]:
+    print("[NAVER] 비산동 단지 목록 조회 시작", flush=True)
     """
     비산동의 아파트 단지 목록 조회.
     네이버 API 형태가 변경될 가능성을 고려해
@@ -280,6 +283,7 @@ def article_request(
 
 
 def get_articles(complex_id: str) -> list[dict[str, Any]]:
+    print(f"[NAVER] complexNo={complex_id} 매물 조회 시작", flush=True)
     all_rows: list[dict[str, Any]] = []
 
     for page in range(1, 11):
